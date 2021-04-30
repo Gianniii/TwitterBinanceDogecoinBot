@@ -1,17 +1,21 @@
 import tweepy
-
 import time 
 import pprint
 import secrets
+import sys
 import config
+import math
 from binance.client import Client
 
 
-#Note: in python these are NOT global variables you have to writte globan in front of them for them to be global
+#Note: how global vars work
+#TODO improvements !! use limit sells!! they are safer! as market sells dont work if the price is dumping HARD or mooning HARD! 
+#in those extreme cases you are forced to limit buy/sell 
+
 MyTwitterId = '499189739'                #my own personal twitter id 
 ElonMustTwitterId = '44196397'           #ElonMusk twitter id 
-expendableUSDT = 10                      #USDT willing to spend to dogecoin
-quantityOfDogesToBuy = 50                #ammount of doges baught
+expendableUSDT = 300                     #USDT willing to allow the bot to spend to dogecoin
+baughtDoges = 0.                         #ammount of doges baught
 
 #TODO once i have a fix ip get allow access with the key ONLY FROM THAT IP ADDRESS ( for extra security)
 
@@ -24,8 +28,8 @@ api = tweepy.API(auth)
 client = Client(config.BkEY, config.bSKey)
 print("connected to API's")
 
-#Filters out mentions and RTs
-def from_creator(status): #might want to change the filter here, if elon retweens a doge meme i want to get that!!
+#Filters out mentions and RTs, only keeps tweets made by the creator
+def from_creator(status): 
     if hasattr(status, 'retweeted_status'):
         return False
     elif status.in_reply_to_status_id != None:
@@ -45,54 +49,58 @@ def getCurPrice():
             return float(prices[i]['price'])
     return 0
 
+#return how many doges i can buy with my usdt (we use a 0.1 safety margin) and truncate to and int for simplicity
+def usdtToDoges(usdt) :
+    return int(usdt/(getCurPrice() + 0.1))
 
-#TODO TEST launchPriceTracker
-#Beggins tracking price of DOGE and sells if price drops by more then 20% of highest price
+#Beggins tracking price of DOGE and sells if price drops by more then 35% of highest price 
 def launchPriceTracker(curHighestPrice, startPrice): 
-    #begin updating price put in a timer to calls this functions every like 10 secs    
+    time.sleep(120.) #check every 2 minutes
+   
     highestPrice = curHighestPrice
     curPrice = getCurPrice()
     if(curPrice == 0): exit() #error
     if(highestPrice < curPrice):
-        highestPrice = curPrice #update highest price since start
+        highestPrice = curPrice #update highest price since buy order
     
-
-    print("startPrice: " + str(startPrice))
-    print("curPrice :" + str(curPrice))
-    print("highestPrice: " + str(highestPrice))
-
     priceDiffToCur = (curPrice - startPrice) 
     priceDiffToHighest = (highestPrice - startPrice) 
 
-    #if we are losing money then sell
+    #if current price or highest price if lower then starting price (this means price went down instead of up) then sell
     if(priceDiffToCur < -0.2  or priceDiffToHighest < -0.2 ): 
-         #order = client.order_market_sell(symbol='DOGEUSDT', quantity = expendableUSDT)
-         print("tries to sell doges first if ")
+         order = client.order_market_sell(symbol='DOGEUSDT', quantity = baughtDoges)
+         sys.stdout.flush()
+         print(order)
          exit()
 
-    #TODO mmh defo need to be carefull here cuz the diff is sometimes NEGATIVE!! so should take absolute value!! but then how do i take into  account the fact the vlaue is negative 
-    if(priceDiffToHighest != 0 and (priceDiffToCur)/(priceDiffToHighest) < 6.5/10.) : #if fall by 35% below local highest then sell 
-        print("tries to sell doges the div is: " +  str(priceDiffToCur) +" "+ str(priceDiffToHighest) + " "+ str((priceDiffToCur)/(priceDiffToHighest)))
-        #order = client.order_market_sell(symbol='DOGEUSDT', quantity = expendableUSDT) #todo thing about cashing out same amount of doges i baught
-        #if order fails what to do ? try again with lower amount of expendableUSDT? 
-        #print("sold doges: {}".format(order))
-        exit() #once we sold we can exit 
     
-    time.sleep(5.) #sleep for 5 seconds before tracking again
+    if(priceDiffToHighest != 0 and math.fabs((priceDiffToCur)/(priceDiffToHighest)) < 6.5/10.) : #if fall by 35% below local highest then sell 
+        print("tries to sell doges the div is: " +  str(priceDiffToCur) +" "+ str(priceDiffToHighest) + " "+ str((priceDiffToCur)/(priceDiffToHighest)))
+        order = client.order_market_sell(symbol='DOGEUSDT', quantity = baughtDoges) #todo thing about cashing out same amount of doges i baught
+        print(order)
+        exit()
+
     launchPriceTracker(highestPrice, startPrice)
 
 class MyStreamListener(tweepy.StreamListener):
 
     def on_status(self, status):
-        if from_creator(status):
+        if from_creator(status): 
             tweet = status.text.lower()
-            if "doge" in tweet:
+            if "doge" or "hodl" or "coin" or "dog" or "hold" or "bark" or "shiba" \
+                or "inu" in tweet:
+                quantityOfDogesToBuy = usdtToDoges(expendableUSDT)
                 order = client.order_market_buy(symbol='DOGEUSDT', quantity = quantityOfDogesToBuy) #TODO smarter way of defining nDogeCoins upper bounded by my quantitiy dogecoins 
                 print(order) 
-                #here add some variables to record some info on the order
-                print("executed order")
+                global baughtDoges 
+                baughtDoges = quantityOfDogesToBuy #record the number of doges baught
+                print("order status: " + order['status'])
+                sys.stdout.flush()
                 startPrice = getCurPrice()
-                launchPriceTracker(startPrice, startPrice)
+                if(order['status'] == 'FILLED'):
+                    launchPriceTracker(startPrice, startPrice)
+                else:
+                    exit() #error
             return True
         return True
 
@@ -104,11 +112,11 @@ class MyStreamListener(tweepy.StreamListener):
             return False
     
 #create stream and keep twitter accounts i choose to follow
-#myStreamListener = MyStreamListener()
-#myStream = tweepy.Stream(auth = api.auth, listener=myStreamListener)       
-#myStream.filter(follow=[MyTwitterId, ElonMustTwitterId])
-#add tesla account, spacex and also companies, mavericks, mark cuban, companies who might it, also coinbase!!! ect.. (try to asses if the tweets are good can also be an improvement)
-launchPriceTracker(getCurPrice(), getCurPrice())
+myStreamListener = MyStreamListener()
+myStream = tweepy.Stream(auth = api.auth, listener=myStreamListener)       
+myStream.filter(follow=[MyTwitterId, ElonMustTwitterId])
+#add tesla account, spacex and also companies, mavericks, mark cuban, companies who might it, also add coinbase!!! ect.. (try to asses if the tweets are good can also be an improvement)
+
 print("listening...")
 
 
@@ -119,6 +127,10 @@ print("listening...")
 
 #possible optimisations : check more the one user, get more words, organise code better maybe even use 1 folder for classes, HIDE CREDS ect.. 
 
+#Debugging prints
+#print("startPrice: " + str(startPrice))
+#print("curPrice :" + str(curPrice))
+#print("highestPrice: " + str(highestPrice))
 
 #=============EXAMPLES OF HOW TO WORK WITH BINANCE API =======================================================================================================
 #info = client.get_symbol_info('BNBBTC')
